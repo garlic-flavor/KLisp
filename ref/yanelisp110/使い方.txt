@@ -1,0 +1,50 @@
+YaneLisp version 1.10
+
+
+これは、LISPもどきです。
+
+何が出来るかは、ソースフォルダにある
+Lisp.csの先頭付近に書いてあるUnitTestを見て
+理解してください。
+
+コマンドプロンプトで
+C:\> YaneLisp
+のように入力すれば、helpが出ます。
+
+テスト用スクリプトのフォルダもご覧ください。
+
+例えば、テスト用スクリプトのフォルダにYaneLisp.exeを
+配置して
+
+> YaneLisp -include lisp.txt
+
+と入力すれば、lisp.txtが実行されます。
+
+
+このプログラム、ソースのライセンスはNYSL
+(→ http://www.kmonos.net/nysl/ )にて配布します。
+
+
+・関連記事
+
+コンピュータ将棋プログラムをLISPで書く
+http://labs.yaneu.com/20090905/
+
+
+やねうらお
+
+
+■　2009/12/06 version 1.10
+
+
+・作りかけのunroller(YaneC)をマージ。(まだ作りかけ)
+・replace命令は正規表現置換しないように仕様変更してregex命令を追加。
+・-compileではコードが更新されているときのみconsoleにコンパイル中である表示を出力するように。
+　また、compileのときにコンソールに結果を出力するのはやめた。
+
+
+■　2009/11/24 version 1.04
+
+http://d.hatena.ne.jp/ak11/20091122
+のpatchをマージ。
+

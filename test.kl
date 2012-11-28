@@ -1,0 +1,28 @@
+; これは一行コメントです。
+; writeln で標準出力に文字列を出力します。
+; '(シングルクォート) は、その直後の S式をそのまま返します。
+; 下の実行結果の t と #nil という結果に注目して下さい。
+; #nil はシンボル nil の実行結果を示す文字列ですが、t はシンボル名がそのまま表示されています。
+(writeln "hello world" 't nil )
+
+; set 関数は引数を評価した後、第一引数に第二引数以降を格納します。
+(set 'a "good-bye heaven")
+
+; シンボル名には日本語も使えます。
+; defun で新しい関数を定義できます。
+(defun これは関数です (a) (writeln "関数が呼び出されました。引数は「" a "」です。"))
+
+(これは関数です "関数呼び出し")
+
+; カッコには、()[]{}［］【】〔〕〈〉＜＞《》 などが使えます。
+【writeln a 】
+
+; 分岐です。
+(if 'a ((writeln "true side")) (writeln "nil side") )
+(if 'b ((writeln "true side")) (writeln "nil side") )
+
+; 文字列には、"" '' `` 「」『』 などが使えます。
+(writeln 「日\」本語」 -3 +12 -3.1415926535 -10e-10 )
+
+; output は writeln の別名です。alias で定義されています。
+(output "alias is ok" )
