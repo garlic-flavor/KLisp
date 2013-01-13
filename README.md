@@ -39,8 +39,13 @@ src/sworks/klisp/yane_kl.d
 ------------------------------
 [CC0]( http://creativecommons.org/publicdomain/zero/1.0/legalcode "Creative Commons 0 License" )
 
+
 更新履歴
 ------------------------------
+- 2013/01/13 ver. 0.003
+
+	なんちゃって CTFE。
+
 - 2012/11/28 ver. 0.002
 
 	全面書き直し。github デビュー。YaneLispなんちゃって準拠

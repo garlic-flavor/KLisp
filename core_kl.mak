@@ -24,7 +24,7 @@ $(TO_LINK) : $(MAKEFILE) $(EXT_LIB)
 src\sworks\compo\util\strutil.obj : src\sworks\compo\util\strutil.d
 src\sworks\compo\util\output.obj : src\sworks\compo\util\output.d
 src\sworks\klisp\lisp.obj : src\sworks\klisp\lisp.d src\sworks\compo\util\output.d src\sworks\klisp\klisp_file.d
-src\sworks\klisp\klisp_file.obj : src\sworks\klisp\klisp_file.d src\sworks\compo\util\sequential_file.d
+src\sworks\klisp\klisp_file.obj : src\sworks\klisp\klisp_file.d src\sworks\compo\util\sequential_file.d src\sworks\compo\util\cached_buffer.d
 src\sworks\compo\win32\sjis.obj : src\sworks\compo\util\strutil.d src\sworks\compo\win32\sjis.d
 src\sworks\compo\util\sequential_file.obj : src\sworks\compo\util\sequential_file.d src\sworks\compo\win32\sjis.d src\sworks\compo\util\cached_buffer.d
 src\sworks\compo\util\cached_buffer.obj : src\sworks\compo\util\cached_buffer.d
@@ -49,6 +49,8 @@ ddoc :
 show :
 	@echo ROOT = src\sworks\klisp\core_kl.d
 	@echo TARGET = $(TARGET)
+	@echo COMPILE FLAGS = $(COMPILE_FLAG)
+	@echo LINK FLAGS = $(LINK_FLAG)
 	@echo VERSION =
 run :
 	$(TARGET) $(FLAG)

@@ -18,26 +18,32 @@ enum QUOTE = "\"\"``「」『』"d;
 enum SINGLE_KEYWORD = "';"d ~ BRACKET;
 
 // 空白文字とコメントを cf 先頭から抜き出す。必要ならばパースは自前で行なう。
-Token core_kl_token_filter( IKLispFile cf, int nest_level )
+class CoreKLToken : KLispToken
 {
 	enum LINE_COMMENT = ';';
 
-	for( dchar d = cf.peek ; '\0' != d ; )
+	this( IKLispFile kf ){ super( kf ); }
+
+	Token nextToken()
 	{
-		if( LINE_COMMENT == d )
+		if( !adjustNest ) return Token();
+		
+		for( dchar d = file.front ; dchar.init != d ; )
 		{
-			for( ; ; )
+			if( LINE_COMMENT == d )
 			{
-				d = cf.discard;
-				if( '\0' == d || cf.newline ) break;
+				for( ; ; )
+				{
+					d = file.discard;
+					if( dchar.init == d || file.newline ) break;
+				}
 			}
+			else if( d.isWhite ) d = file.discard;
+			else break;
 		}
-		else if( d.isWhite ) d = cf.discard;
-		else break;
+		return chomp_token!( QUOTE, SINGLE_KEYWORD );
 	}
-	return Token();
 }
-alias _nextToken!( core_kl_token_filter, QUOTE, SINGLE_KEYWORD ) token_filter;
 alias _KLispFile!( BRACKET ) KLispFile;
 
 // これらの変数はダミーでインスタンス化されない。
@@ -156,34 +162,59 @@ class IfExp : FuncBase
 	}
 }
 
-debug( core_kl ):
-import std.conv : to;
-import sworks.klisp.token;
-void main()
+debug( core_kl )
 {
-	try
+	import std.conv : to;
+	import sworks.klisp.token;
+	void main()
 	{
-		auto ss = new SymbolScope;
-		ss.entry!(sworks.klisp.core_kl);
-//*
-		(new KLispFile( "test.kl" )).eval!token_filter( ss );
-/*///*
-		auto kf = new KLispFile( "test.kl" );
-//*
-		for( ; !kf.eof ; )
+		try
 		{
-			Output.ln( kf.parse!token_filter( ss, kf.nest ).toDstring );
-		}
+			auto ss = new SymbolScope;
+			ss.entry!(sworks.klisp.core_kl);
 
-/*//*
-		Token t;
-		for( ; !kf.eof ; )
-		{
-			t = kf.token_filter( kf.nest );
-			Output.ln( kf.nest, ", ", t.type.to!string, " : ", t.value );
+	//(new KLispFile( "(writeln 「ok」)"d)).eval!token_filter( ss );
+
+	//*
+			auto kf = new KLispFile( "test.kl" );
+			auto kt = new CoreKLToken( kf );
+			kt.eval( ss );
+	/*//*
+			auto kf = new KLispFile( "test.kl" );
+	//*
+			for( ; !kf.eof ; )
+			{
+				Output.ln( kf.parse!token_filter( ss, kf.nest ).toDstring );
+			}
+
+	/*//*
+			Token t;
+			for( ; !kf.eof ; )
+			{
+				t = kf.token_filter( kf.nest );
+				Output.ln( kf.nest, ", ", t.type.to!string, " : ", t.value );
+			}
+			kf.close;
+	//*/
 		}
-		kf.close;
-//*/
+		catch( Throwable t ) Output.ln( t.toString );
 	}
-	catch( Throwable t ) Output.ln( t.toString );
+}
+debug( ct_core_kl )
+{
+	import std.array, std.conv;
+	import sworks.compo.util.output;
+	import sworks.klisp.lisp;
+
+	void main()
+	{
+		try
+		{
+			auto ss = new SymbolScope;
+			ss.entry!( sworks.klisp.core_kl );
+			auto ckt = mixin( CTKLispToken.init!( KLispFile, CoreKLToken, "test.kl" ) );
+			ckt.eval( ss );
+		}
+		catch( Throwable t ) Output.ln( t.toString );
+	}
 }

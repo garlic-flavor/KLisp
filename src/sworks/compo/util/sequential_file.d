@@ -1,6 +1,6 @@
 /** ファイルを UTF-32 で一字ずつ読み込み。
- * Version:      0.002(dmd2.060)
- * Date:         2012-Nov-28 15:55:35
+ * Version:      0.003(dmd2.060)
+ * Date:         2013-Jan-14 02:44:54
  * Authors:      KUMA
  * License:      CC0
  */
@@ -10,7 +10,7 @@ import std.array, std.ascii, std.bitmanip, std.conv, std.stdio, std.utf;
 import sworks.compo.util.cached_buffer;
 version( Windows ) import sworks.compo.win32.sjis; // std.stdio.File が日本語ファイル名未対応の為
 
-enum ENCODING
+enum ENCODING : ubyte
 {
 	NULL    = 0x00,
 	UTF8    = 0x10,
@@ -21,83 +21,39 @@ enum ENCODING
 	SJIS    = 0x40, // -version=use_MultiByteToWideChar か -version=use_iconv で対応
 
 	ENDIAN_MASK   = 0x0f,
+	STANDARD_MASK = 0xf0,
 	NO_ENDIAN     = 0x00,
 	LITTLE_ENDIAN = 0x01,
 	BIG_ENDIAN    = 0x02,
 }
 
-// ICache の先頭に BOM があればそれを取り除き、その ENCODING を返す。
+// c の先頭に BOM があればそれを取り除き、その ENCODING を返す。
 // BOM がなければ ENCODING.NULL を返す。
-ENCODING strip_bom( ICache c )
+ENCODING strip_bom( TICache!ubyte c )
 {
-	enum UTF8    = [ 0xef, 0xbb, 0xbf ];
-	enum UTF16LE = [ 0xff, 0xfe ];
-	enum UTF16BE = [ 0xfe, 0xff ];
-	enum UTF32LE = [ 0xff, 0xfe, 0x00, 0x00 ];
-	enum UTF32BE = [ 0x00, 0x00, 0xfe, 0xff ];
+	assert( null !is c );
+	enum UTF8    = [ ENCODING.UTF8, 0xef, 0xbb, 0xbf ];
+	enum UTF16LE = [ ENCODING.UTF16LE, 0xff, 0xfe ];
+	enum UTF16BE = [ ENCODING.UTF16BE, 0xfe, 0xff ];
+	enum UTF32LE = [ ENCODING.UTF32LE, 0xff, 0xfe, 0x00, 0x00 ];
+	enum UTF32BE = [ ENCODING.UTF32BE, 0x00, 0x00, 0xfe, 0xff ];
 
 	ENCODING e = ENCODING.NULL;
 
-	bool _check( alias BOM )()
+	bool _check( alias TYPE )()
 	{
-		if( BOM == c.peek_cache( BOM.length ) ) { c.discard( BOM.length ); return true; }
+		enum E = cast(ENCODING)TYPE[0];
+		enum BOM = TYPE[ 1 .. $ ];
+		if( BOM == c.peek( BOM.length ) ) { c.popFront( BOM.length ); e = E; return true; }
 		else return false;
 	}
+	_check!UTF8 || _check!UTF16LE || _check!UTF16BE || _check!UTF32LE || _check!UTF32BE;
 
-	if     ( _check!UTF8 ) e = ENCODING.UTF8;
-	else if( _check!UTF16LE ) e = ENCODING.UTF16LE;
-	else if( _check!UTF16BE ) e = ENCODING.UTF16BE;
-	else if( _check!UTF32LE ) e = ENCODING.UTF32LE;
-	else if( _check!UTF32BE ) e = ENCODING.UTF32BE;
 	return e;
 }
 
-/*
- * UTF32 で一字ずつ読み込む。
- * 現在の行数と、行先頭であるかどうかを保持している。
- * 改行コードは半自動判定。分からなければ(1行目がすごい長いとか)環境依存。
- * ファイルからの文字の読み込みにあたる部分を abstract にしてある。
- */
-abstract class SequentialFile
-{
-	private dchar _line_tail;
-	private string _filename;
-	private size_t _line;
-	protected bool _new_line;
-
-	this( string filename )
-	{
-		this._filename = filename;
-		this._line = 1;
-		this._new_line = true;
-		this._line_tail = .newline[$-1];
-	}
-
-	string filename() @property const { return _filename; }
-	abstract ENCODING encoding() @property const;
-	size_t line() @property const{ return _line; }
-	bool newline() @property const{ return _new_line; }
-	abstract bool eof() @property const;
-	abstract dchar peek() @property;
-	dchar discard( size_t s = 1 )
-	{
-		for( size_t i = 0 ; i < s ; i++ )
-		{
-			_new_line = ( _line_tail == peek );
-			if( _new_line ) _line++;
-			discard_cache;
-		}
-		return peek;
-	}
-
-	abstract protected void discard_cache();
-
-	abstract const(dchar)[] peek_cache( size_t size );
-	abstract void close();
-}
-
 // 改行コードの決定。二文字の改行コードの場合は最後の文字を返す。
-private dchar decide_line_tail( const(dchar)[] buf )
+private dchar decide_line_tail(T)( const(T)[] buf )
 {
 	for( size_t i = 0 ; i < buf.length ; i++ )
 	{
@@ -112,126 +68,170 @@ private dchar decide_line_tail( const(dchar)[] buf )
 }
 
 
-/// CTFE 時などまるっとキャッシュできる場合に。
-class DstringBuffer : SequentialFile
+// ファイルを一時ずつ UTF32 で読み込み。
+// 行番号を保持する。
+class SequentialBuffer : TICache!dchar
 {
-	private dstring _cache;
-	this( dstring cache )
+	private const string _filename;
+	private TICache!dchar _cache;
+
+	private immutable dchar _line_tail;
+	private size_t _line;
+	private bool _new_line;
+
+
+	debug
 	{
-		super( typeof(this).stringof );
-		this._cache = cache;
-		_line_tail = decide_line_tail( cache[ 0 .. 1024 < cache.length ? 1024 : cache.length ] );
+		debug private Benchmark delegate() _bmark_of_cache1;
+		this( string filename, TICache!dchar c, Benchmark delegate() boc1 )
+		{
+			this( filename, c );
+			this._bmark_of_cache1 = boc1;
+		}
 	}
 
-	override ENCODING encoding() @property const
+	this( string filename, TICache!dchar c )
 	{
-		version     ( LittleEndian ) return ENCODING.UTF32LE;
-		else version( BigEndian ) return ENCODING.UTF32BE;
-		else static assert( 0 );
+		this._filename = filename;
+		this._cache = c;
+		this._line = 1;
+		this._new_line = true;
+		this._line_tail = decide_line_tail( c.peekBetter );
 	}
-	override bool eof() @property const{ return 0 == _cache.length; }
-	override dchar peek() @property { return 0 < _cache.length ? _cache[0] : '\0'; }
-	override protected void discard_cache(){ if( 0 < _cache.length ) _cache = _cache[ 1 .. $ ]; }
-	override const(dchar)[] peek_cache( size_t size )
+
+	size_t size() @property const { return _cache.size; }
+	dchar front() @property const { return _cache.front; }
+	const(dchar)[] peek( size_t s ) { return _cache.peek( s ); }
+	const(dchar)[] peekBetter() @property { return _cache.peekBetter; }
+	dchar[] getBinary( dchar[] buf ){ return _cache.getBinary( buf ); }
+	bool eof() @property const { return _cache.eof; }
+	void close() @property { _cache.close; _line = 1; _new_line = true; }
+	const(dchar)[] stack() @property const { return _cache.stack; }
+	void flush() { return _cache.flush; }
+	
+	string filename() @property const { return _filename; }
+	size_t line() @property const { return _line; }
+	bool isNewLine() @property const { return _new_line; }
+
+	dchar popFront( size_t s = 1 )
 	{
-		if( _cache.length < size ) size = _cache.length;
-		return _cache[ 0 .. size ];
+		for( size_t i = 0 ; i < s ; i++ )
+		{
+			_new_line = ( _line_tail == _cache.front );
+			if( _new_line ) _line++;
+			_cache.popFront;
+		}
+		return _cache.front;
 	}
-	override void close(){ _cache = null; }
+
+	dchar push( size_t s = 1 )
+	{
+		for( size_t i = 0 ; i < s ; i++ )
+		{
+			_new_line = ( _line_tail == _cache.front );
+			if( _new_line ) _line++;
+			_cache.push;
+		}
+		return _cache.front;
+	}
+
+	dchar push( dchar c )
+	{
+		_new_line = ( _line_tail == c );
+		if( _new_line ) _line++;
+		return _cache.push( c );
+	}
+
+	debug Benchmark getBenchmark() @property const { return _cache.getBenchmark; }
+	debug Benchmark getBenchmark1() @property const { return _bmark_of_cache1(); }
 }
+
+alias TWholeCache!dchar UTF32Buffer;
+alias TICache!ubyte ICache1;
+alias TCachedBuffer!ubyte Cache1;
+alias TCachedBuffer!dchar UTF32File;
 
 /*
- * sworks.compo.util.cached_buffer 依存型
- * ICache の実装が公開されている。
- * 文字コード変換部分を abstract にしてある。
+ * ファイルを開き、BOM を読み込んで適当な SequentialFile のインスタンスを返す。
+ * BOM が見つからなかった場合は引数 code に従うが、code が ENCODING.NULL の場合は UTF-8 と見なす。
+ * 引数で指定した code と見つかった BOM とが一致しない場合は例外が投げられる。
  */
-abstract class SequentialFileCode( ENCODING CODE ) : SequentialFile
+SequentialBuffer getSequentialBuffer( string filename, ENCODING def_enc = ENCODING.NULL
+                                    , size_t cache_size = 1024 )
 {
-	protected ICache _cache;
-	protected Appender!(dchar[]) _peeking_cache;
-	protected dchar[] _use;
+	File* f;
+	version(Windows) f = new File( filename.toMBS.c, "rb" );
+	else f = new File( filename, "rb" );
 
-	this( string filename, ICache cache )
-	{
-		super( filename );
-		this._cache = cache;
-		refill_cache;
-		_line_tail = decide_line_tail( _use );
-	}
+	auto cache1 = new Cache1( buf=>f.rawRead(buf).length, s=>f.seek( s, SEEK_CUR )
+	                        , ()=>f.close, cache_size );
+	auto enc = cache1.strip_bom;
+	if     ( ENCODING.NULL == def_enc ) { if( ENCODING.NULL == enc ) enc = ENCODING.UTF8; }
+	else if( ENCODING.NULL == enc ) enc = def_enc;
+	else if( enc != def_enc )
+		throw new Exception( def_enc.to!string ~ " モードが要求さましたが、ファイル \""
+		                   ~ filename ~ "\" には、" ~ enc.to!string ~ " のBOMが見つかりました。" );
 
-	override ENCODING encoding() @property const { return CODE; }
-	override bool eof() @property const { return 0 == _use.length && _cache.eof; }
-	override dchar peek() @property { return *_use.ptr; }
-	abstract protected void refill_cache();
-	override protected void discard_cache()
+	UTF32File c2;
+	void setC2( alias F, TYPE )()
 	{
-		if( 1 < _use.length ) _use = _use[ 1 .. $ ];
-		else { _use = _use[ 0 .. 0 ]; refill_cache; }
+		c2 = new UTF32File( b=>F(cache1,b), null, ()=>cache1.close, cache_size >> (TYPE.sizeof>>1) );
 	}
-	override const(dchar)[] peek_cache( size_t size )
+	if     ( ENCODING.UTF8 == enc ) setC2!( readUTF8, char);
+	else if( ENCODING.UTF16LE == enc ) setC2!( readUTF16LE, wchar );
+	else if( ENCODING.UTF16BE == enc ) setC2!( readUTF16BE, wchar );
+	else if( ENCODING.UTF32LE == enc ) setC2!( readUTF32LE, dchar );
+	else if( ENCODING.UTF32BE == enc ) setC2!( readUTF32BE, dchar );
+	else if( ENCODING.SJIS == enc )
 	{
-		if( _use.length < size ) refill_cache;
-		if( _use.length < size ) size = _use.length;
-		return _use[ 0 .. size ];
+		version     ( use_MultiByteToWideChar ) setC2!( readSJIS, jchar );
+		else version( use_iconv )
+		{
+			auto toSJIS = new readSJIS;
+			c2 = new UTF32File( b=>toSJIS(cache1,b), null, (){ cache1.close; toSJIS.close; }
+			                  , cache_size );
+		}
+		else throw new Exception( "SHIFT-JIS のサポートには -version=use_MultiByteToWideChar か "
+		                          "-version=use_iconv でコンパイルして下さい。" );
 	}
-	override void close()
-	{
-		_peeking_cache.shrinkTo(1);
-		_peeking_cache.data[0] = '\0';
-		_use = _peeking_cache.data[ 0 .. 0 ];
-		_cache.close();
-	}
+	if( null is c2 ) throw new Exception( enc.to!string ~ " はサポートされていない文字コードです。" );
 
-	protected void shrink()
-	{
-		for( size_t i = 0 ; i < _use.length ; i++ ) _peeking_cache.data[i] = _use[i];
-		_use = _peeking_cache.data[ 0 .. _use.length ];
-		_peeking_cache.shrinkTo( _use.length );
-		_peeking_cache.put( '\0' ); // 番兵
-	}
+	debug return new SequentialBuffer( filename, c2, &cache1.getBenchmark );
+	else return new SequentialBuffer( filename, c2 );
 }
 
-// Unicode 系のファイルの読み込みに。
-class SequentialFileCodeUTFx( ENCODING CODE, TCHAR ) : SequentialFileCode!CODE
+SequentialBuffer getSequentialBuffer( const(dchar)[] buf )
 {
-	this( string filename, ICache cache ) { super( filename, cache ); }
-
-	override protected void refill_cache()
-	{
-		shrink;
-
-		// ありったけ読み込み
-		auto buf = _cache.peek_cache( size_t.max );
-
-		// 端数バイトを切り捨て
-		auto tbuf = cast(TCHAR[])buf[ 0 .. buf.length>>(TCHAR.sizeof>>1)<<(TCHAR.sizeof>>1) ];
-
-		// エンディアンの交換
-		version     ( LittleEndian )
-			static if( CODE & ENCODING.BIG_ENDIAN ) foreach( ref one ; tbuf ) one = swapEndian(one);
-		else version( BigEndian )
-			static if( CODE & ENCODING.LITTLE_ENDIAN ) foreach( ref one ; tbuf ) one = swapEndian(one);
-		else static assert(0);
-		if( 0 == tbuf.length ) return;
-
-		// 端数文字切り捨て。
-		auto sb = tbuf.strideBack( tbuf.length );
-		if( sb != tbuf.stride( tbuf.length - sb ) ) tbuf = tbuf[ 0 .. $ - sb ];
-
-		_peeking_cache.shrinkTo( _use.length );
-		_peeking_cache.put( tbuf.to!(TCHAR[]) );
-		_peeking_cache.put( '\0' ); // 番兵
-		_use = _peeking_cache.data[ 0 .. $-1 ];
-
-		// 使った分だけファイルを進める。
-		_cache.discard( tbuf.length * TCHAR.sizeof );
-	}
+	return new SequentialBuffer( "DSTRING", new UTF32Buffer( buf ) );
 }
-alias SequentialFileCodeUTFx!(ENCODING.UTF8, char ) SequentialFileCodeUTF8;
-alias SequentialFileCodeUTFx!(ENCODING.UTF16LE, wchar ) SequentialFileCodeUTF16LE;
-alias SequentialFileCodeUTFx!(ENCODING.UTF16BE, wchar ) SequentialFileCodeUTF16BE;
-alias SequentialFileCodeUTFx!(ENCODING.UTF32LE, dchar ) SequentialFileCodeUTF32LE;
-alias SequentialFileCodeUTFx!(ENCODING.UTF32BE, dchar ) SequentialFileCodeUTF32BE;
+
+size_t readUTFx( ENCODING CODE, TCHAR)( ICache1 cache, dchar[] buf )
+{
+	auto buf1 = cache.peekBetter();
+	if( buf.length * TCHAR.sizeof < buf1.length ) buf1 = buf1[ 0 .. buf.length * TCHAR.sizeof ];
+	auto buf2 = cast(TCHAR[])buf1[ 0 .. buf1.length>>(TCHAR.sizeof>>1)<<(TCHAR.sizeof>>1) ];
+	if( 0 == buf2.length ) return 0;
+
+	version     ( LittleEndian )
+		static if( CODE & ENCODING.BIG_ENDIAN ) foreach( ref o ; buf2 ) o = swapEndian( o );
+	else version( BigEndian )
+		static if( CODE & ENCODING.LITTLE_ENDIAN ) foreach( ref o ; buf2 ) o = swapEndian( o );
+	else static assert( 0 );
+
+	auto sb = buf2.strideBack( buf2.length );
+	if( sb != buf2.stride( buf2.length - sb ) ) buf2 = buf2[ 0 .. $ - sb ];
+
+	size_t i = 0, j = 0;
+	for( ; i < buf.length && j < buf2.length ; i++ ) buf[i] = buf2.decode( j );
+	cache.popFront( j * TCHAR.sizeof );
+
+	return i;
+}
+alias readUTFx!( ENCODING.UTF8, char ) readUTF8;
+alias readUTFx!( ENCODING.UTF16LE, wchar ) readUTF16LE;
+alias readUTFx!( ENCODING.UTF16BE, wchar ) readUTF16BE;
+alias readUTFx!( ENCODING.UTF32LE, wchar ) readUTF32LE;
+alias readUTFx!( ENCODING.UTF32BE, wchar ) readUTF32BE;
 
 // SHIFT-JIS の扱いには2ヴァージョンある。
 version     ( use_MultiByteToWideChar )
@@ -242,148 +242,109 @@ version     ( use_MultiByteToWideChar )
 	                       "ヴァージョンです。それ以外のプラットフォームでは"
 	                       "-version=use_iconv を利用して下さい。" );
 
-	class SequentialFileCodeSJIS : SequentialFileCode!(ENCODING.SJIS)
+	size_t readSJIS( ICache1 cache, dchar[] buf )
 	{
-		this( string filename, ICache cache ){ super( filename, cache ); }
+		auto jstr = cache.peek( buf.length ).j;
+		if( 0 < jstr.length && !jstr[$-1].isASCII ) jstr = jstr[ 0 .. $-1 ];
+		if( 0 == jstr.length ) return 0;
 
-		override protected void refill_cache()
-		{
-			shrink;
-			// ありったけ読み込む。
-			auto src = cast(const(char)[])_cache.peek_cache( size_t.max );
-
-			// 端数バイト切り捨て
-			if( 0 < src.length && !src[$-1].isASCII ) src = src[ 0 .. $-1 ];
-			if( 0 == src.length ) return;
-
-			// まずは UTF-16 に。
-			auto dest = new wchar[ MultiByteToWideChar( 0, 0, src.ptr, src.length, null, 0 ) ];
-			if( 0 == dest.length || dest.length != MultiByteToWideChar( 0, 0, src.ptr, src.length
-			                                                          , dest.ptr, dest.length ) )
-					throw new Exception( "an error occured in MultiByteToWideChar()" );
-
-			// UTF-32 にしてキャッシュに追加
-			_peeking_cache.shrinkTo( _use.length );
-			_peeking_cache.put( dest.to!(const(dchar)[]) );
-			_peeking_cache.put( '\0' ); // 番兵
-			_use = _peeking_cache.data[ 0 .. $-1 ];
-
-			// 使った分だけファイルを進める。
-			_cache.discard( src.length );
-		}
+		auto utf16 = new wchar[ MultiByteToWideChar( 0, 0, jstr.c.ptr, jstr.length, null, 0 ) ];
+		if( 0 == utf16.length || utf16.length != MultiByteToWideChar( 0, 0, jstr.c.ptr, jstr.length
+		                                                            , utf16.ptr, utf16.length ) )
+			throw new Exception( "an error occured in MultiByteToWideChar()" );
+		size_t i = 0, j = 0;
+		for( ; i < buf.length, j < utf16.length ; i++ ) buf[i] = utf16.decode( j );
+		cache.popFront( jstr.length );
+		return i;
 	}
 }
 else version( use_iconv )
 {
-	// iconv を使う場合。実行時に libiconv-2.dll を使います。libiconv-2.lib をリンクして下さい。
-	// iconv には終了処理が必要ですので、 SequentialFileCodeSJIS.close() を必ず実行して下さい。
+	// iconv を使う場合は実行時に libiconv-2.dll を使います。libiconv-2.lib をリンクして下さい。
+	// iconv には終了処理が必要ですので、 readSJIS.close() を必ず実行して下さい。
 	alias void* iconv_t;
 	extern(C) nothrow iconv_t libiconv_open( const(char)* tocode, const(char)* fromcode );
 	extern(C) nothrow size_t libiconv( iconv_t cd, const(void)** inbuf, size_t* inbytesleft
 	                                  , const(void)** outbuf, size_t* outbytesleft );
 	extern(C) nothrow int libiconv_close( iconv_t cd );
 
-	class SequentialFileCodeSJIS : SequentialFileCode!(ENCODING.SJIS)
+	class readSJIS
 	{
 		iconv_t cd;
-		this( string filename, ICache cache )
+		this()
 		{
-			_peeking_cache.put( new dchar[ cache.cache_size ] );
-			_use = _peeking_cache.data[ 0 .. 0 ];
 			version     ( LittleEndian ) cd = libiconv_open( "UTF-32LE", "SHIFT-JIS" );
 			else version( BigEndian ) cd = libiconv_open( "UTF-32BE", "SHIFT-JIS" );
 			else static assert( 0 );
-			super( filename, cache );
 		}
 
-		override protected void refill_cache()
+		size_t opCall( ICache1 cache, dchar[] buf )
 		{
-			// iconv 版では _peeking_cache のサイズを替えないので shrink を使わない。
-			for( size_t i = 0 ; i < _use.length ; i++ ) _peeking_cache.data[i] = _use[i];
-			_use = _peeking_cache.data[ 0 .. _use.length ];
-
 			// ありったけ読み込む。
-			auto src = cast(const(char)[])_cache.peek_cache( size_t.max );
-			if( 0 == src.length ) return;
+			auto src = cache.peek( buf.length ).j;
+			if( 0 == src.length ) return 0;
 
 			// いけるとこまでキャッシュ上に直接書き込む。
 			auto srcptr = src.ptr;
 			auto srcleft = src.length;
-			auto dest = _peeking_cache.data[ _use.length .. $-1 ];
-			auto destptr = dest.ptr;
-			auto destleft = dest.length << (dchar.sizeof>>1);
+			auto destptr = buf.ptr;
+			auto destleft = buf.length << (dchar.sizeof>>1);
 			libiconv( cd, cast(const(void)**)&srcptr, &srcleft, cast(const(void)**)&destptr, &destleft );
 
 			// 全然進んでない場合はエラー
 			if( src.length == srcleft ) throw new Exception( "an error occured in iconv." );
 
-			_use = _peeking_cache.data[ 0 .. _use.length + dest.length - (destleft>>(dchar.sizeof>>1)) ];
-			_peeking_cache.data[ _use.length ] = '\0'; // 番兵
-
 			// 使った分だけファイルを進める。
-			_cache.discard( src.length - srcleft );
+			cache.popFront( src.length - srcleft );
+			return buf.length - (destleft>>(dchar.sizeof>>1));
 		}
 
 		// 終了処理が必須
-		override void close()
+		void close() { libiconv_close( cd ); }
+	}
+}
+
+
+debug(sequential_file)
+{
+	import sworks.compo.util.output;
+	import sworks.compo.util.dump_members;
+
+	void main()
+	{
+		try
 		{
-			super.close;
-			libiconv_close( cd );
+			auto ef = getSequentialBuffer( "../klisp/test.cpp" );
+			for( auto d = ef.front ; !ef.eof ; d = ef.popFront ) Output( d );
+			Output.ln();
+			Output.ln( "cache1" );
+			Output.ln( ef.getBenchmark1.dump_members );
+			Output.ln( "cache2" );
+			Output.ln( ef.getBenchmark.dump_members );
+			ef.close;
 		}
+		catch( Throwable t ) Output.ln( t.toString );
 	}
 }
 
-/*
- * ファイルを開き、BOM を読み込んで適当な SequentialFile のインスタンスを返す。
- * BOM が見つからなかった場合は引数 code に従うが、code が ENCODING.NULL の場合は UTF-8 と見なす。
- * 引数で指定した code と見つかった BOM とが一致しない場合は例外が投げられる。
- */
-SequentialFile getSequentialFile( string filename, ENCODING code = ENCODING.NULL, size_t cs = 1024 )
+debug(ct_sequential_file)
 {
-	File* f = (new File[1]).ptr; // クロージャでスコープ外に持ちだすので。
-	version(Windows) (*f) = File( filename.toMBS.c, "rb" ); // 日本語ファイル名に対応する為
-	else (*f) = File( filename, "rb" );
+	import std.conv;
+	import sworks.compo.util.output;
+	import sworks.compo.util.dump_members;
 
-	auto cache = new CachedBuffer( r=>f.rawRead(r).length, s=>f.seek( s, SEEK_CUR )
-	                             , ()=>f.close, cs );
+	string func1()
+	{
+		Appender!string result;
+		auto ef = getSequentialBuffer( "writeln( \"hello world\" );"d );
 
-	ENCODING e = cache.strip_bom;
-	if( ENCODING.NULL == code )
-	{
-		if( ENCODING.NULL == e ) e = ENCODING.UTF8;
-	}
-	else if( ENCODING.NULL == e ) e = code;
-	else if( e != code )
-	{
-		throw new Exception( code.to!string ~ " モードが要求されましたが、ファイル \""
-		                   ~ filename ~ "\" には " ~ e.to!string ~ " のBOMが見つかりました。" );
+		for( auto d = ef.front ; !ef.eof ; d = ef.popFront ) result.put( d.to!string );
+		return result.data;
 	}
 
-	if     ( ENCODING.UTF8 == e ) return new SequentialFileCodeUTF8( filename, cache );
-	else if( ENCODING.UTF16LE == e ) return new SequentialFileCodeUTF16LE( filename, cache );
-	else if( ENCODING.UTF16BE == e ) return new SequentialFileCodeUTF16BE( filename, cache );
-	else if( ENCODING.UTF32LE == e ) return new SequentialFileCodeUTF32LE( filename, cache );
-	else if( ENCODING.UTF32BE == e ) return new SequentialFileCodeUTF32BE( filename, cache );
-	else if( ENCODING.SJIS == e )
+	void main()
 	{
-		version     ( use_MultiByteToWideChar ) return new SequentialFileCodeSJIS( filename, cache );
-		else version( use_iconv ) return new SequentialFileCodeSJIS( filename, cache );
+		mixin( func1() );
 	}
 
-	throw new Exception( e.to!string ~ " はサポートされていない文字コードです。" );
-}
-
-debug(sequential_file):
-import sworks.compo.util.output;
-
-void main()
-{
-	try
-	{
-		auto ef = getSequentialFile( "test-sjis.txt", ENCODING.SJIS );
-		Output.ln( "ENCODING : ", ef.encoding.to!string );
-		for( auto d = ef.peek ; !ef.eof ; d = ef.discard ) Output( d );
-		ef.close;
-	}
-	catch( Throwable t ) Output.ln( t.toString );
 }

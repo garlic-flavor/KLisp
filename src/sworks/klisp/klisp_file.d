@@ -1,6 +1,6 @@
 /**
- * Version:      0.002(dmd2.060)
- * Date:         2012-Nov-28 15:55:35
+ * Version:      0.003(dmd2.060)
+ * Date:         2013-Jan-14 02:44:54
  * Authors:      KUMA
  * License:      CC0
 */
@@ -9,8 +9,9 @@
  */
 module sworks.klisp.klisp_file;
 
-import std.algorithm, std.array, std.ascii, std.conv, std.range, std.stdio, std.utf;
+import std.array, std.algorithm, std.ascii, std.conv, std.range, std.stdio, std.utf;
 import sworks.compo.util.sequential_file;
+debug import sworks.compo.util.cached_buffer;
 
 /**
  * Kara-Lisp の パース／実行中 に使われる例外
@@ -57,14 +58,15 @@ interface IKLispFile
 	bool eof() @property const;
 	size_t line() @property const;
 	bool newline() @property const; // 行頭の場合は true
-	dchar peek() @property;
-	const(dchar)[] peek_cache( size_t );
-	dchar chomp(); // キャッシュ先頭の内容を返し、キャッシュを1字進める。括弧が処理される
+	dchar front() @property;
+	const(dchar)[] peek( size_t );
+
+	dchar push(); // キャッシュ先頭の1字を返し、キャッシュを1字進める。括弧が処理される
 	dchar discard( size_t s = 1 ); // キャッシュをs字進め、次の1字を返す。括弧が考慮されない。
 
-	// ちょこっとメモしておける。
-	void push( dchar dc );
-	const(dchar)[] buffer() @property const;
+	// c をスタックに詰み、キャッシュを1字進める。
+	dchar push( dchar c );
+	const(dchar)[] stack() @property const;
 	void flush();
 
 	int nest() @property const; // 0開始で括弧の深度を表す
@@ -81,86 +83,121 @@ interface IKLispFile
  */
 class _KLispFile( dstring BRACKET ) : IKLispFile
 {
-	private SequentialFile _file;
-	private dchar _peeking_char;
-
-	private Appender!dstring _buffer;
-	private Appender!(dchar[]) _nest;
+	private SequentialBuffer _file;
+	private dchar[] _nest;
 
 	// UTF-8 文字列を渡した場合はファイル名であると判断する。
-	this( string f, ENCODING code = ENCODING.NULL )
+	this( string f, ENCODING code = ENCODING.NULL, size_t cache_size = 1024 )
 	{
-		this._file = f.getSequentialFile( code );
+		this._file = f.getSequentialBuffer( code, cache_size );
 	}
 
 	// UTF-32 文字列を渡した場合はファイルの中身であると判断する。
-	this( dstring cache ){ this._file = new DstringBuffer( cache ); }
+	this( dstring cache ){ this._file = cache.getSequentialBuffer; }
 
 	string filename() @property const{ return _file.filename; }
 	bool eof() @property const { return _file.eof; }
 	size_t line() @property const { return _file.line; }
-	bool newline() @property const { return _file.newline; }
-	dchar peek() @property { return _file.peek; }
-	const(dchar)[] peek_cache( size_t s ) { return _file.peek_cache( s ); }
+	bool newline() @property const { return _file.isNewLine; }
+	dchar front() @property const { return _file.front; }
+	const(dchar)[] peek( size_t s ) { return _file.peek( s ); }
+
+	// カッコの種類/深度は考慮されない。
+	// クォートされた文字列内やコメント内でファイルを進める場合はこちら。
+	dchar discard( size_t size = 1 ) { return _file.popFront( size ); }
 
 	// 括弧の種類の対応、括弧の深度などがチェックされる。
-	dchar chomp()
+	private dchar _check_bracket( dchar d )
 	{
-		auto d = _file.peek;
 		int i;
-		if     ( '\0' == d && 0 < _nest.data.length )
+		if     ( dchar.init == d && 0 < _nest.length )
 		{
 			throw new KLispException( _file.filename, _file.line, ""d
-				, "式の途中でファイルが終わりました。閉じカッコ\"" ~ _nest.data.retro.to!dstring
+				, "式の途中でファイルが終わりました。閉じカッコ\"" ~ _nest.retro.to!dstring
 				  ~ "\"が足りません。" );
 		}
 		else if( 0 <= ( i = BRACKET.countUntil(d) ) )
 		{
 			if( i & 1 ) // 閉じ括弧
 			{
-				if( 0 == _nest.data.length )
+				if( 0 == _nest.length )
 				{
 					throw new KLispException( _file.filename, _file.line, [d], "閉じカッコが多すぎます。"d );
 				}
 
-				if( d != _nest.data[ $-1 ] )
+				if( d != _nest[ $-1 ] )
 				{
 					throw new KLispException( _file.filename, _file.line, [d]
 					                        , "閉じカッコの種類が合いません。\""d
-					                          ~ _nest.data.retro.to!dstring ~ "\"が期待されています。"d );
+					                          ~ _nest.retro.to!dstring ~ "\"が期待されています。"d );
 				}
-				_nest.shrinkTo( _nest.data.length - 1 );
+				_nest = _nest[ 0 .. $ - 1 ];
 			}
 			else // 開き括弧
 			{
 				assert( i+1 < BRACKET.length );
-				_nest.put( BRACKET[i+1] );
+				_nest ~= BRACKET[ i + 1 ];
 			}
 			d = DEFAULT_BRACKET[ i & 1 ];
 		}
-
-		_file.discard;
 		return d;
 	}
 
-	// カッコの種類/深度は考慮されない。
-	// クォートされた文字列内やコメント内でファイルを進める場合はこちら。
-	dchar discard( size_t size = 1 ) { return _file.discard( size ); }
+	// カーソルを進めて1字スタックに積む
+	dchar push()
+	{
+		auto d = _check_bracket( _file.front );
+		_file.push(d);
+		return d;
+	}
+	dchar push( dchar c ) { _file.push( c ); return c; }
 
-	// ちょこっとメモ。
-	void push( dchar dc ){ _buffer.put( dc ); }
-	const(dchar)[] buffer() @property const { return _buffer.data; }
-	void flush() { _buffer.clear; }
+	const(dchar)[] stack() @property const { return _file.stack; }
+	void flush() { _file.flush; }
 
 	// 0開始の括弧の深度を表わす。
-	int nest() @property const { return cast(int)_nest.data.length; }
+	int nest() @property const { return cast(int)_nest.length; }
 
 	void close()
 	{
-		_buffer.clear;
-		_nest.clear;
+		_nest = null;
 		_file.close;
-		_peeking_char = '\0';
+	}
+
+	debug Benchmark getBenchmark() @property const { return _file.getBenchmark; }
+}
+
+debug(klisp_file)
+{
+	import sworks.compo.util.output;
+
+	void main()
+	{
+		try
+		{
+			auto ef = new _KLispFile!"()"( "HELLO WORLD\r\n"d );
+			for( auto d = ef.front ; !ef.eof ; d = ef.push ) Output( d );
+			ef.close;
+		}
+		catch( Throwable t ) Output.ln( t.toString );
 	}
 }
 
+debug( ct_klisp_file )
+{
+	import sworks.compo.util.output;
+
+	string func1( dstring cont )
+	{
+		Appender!dstring result;
+		auto ef = new _KLispFile!"()"( cont );
+		for( ; !ef.eof ; ) result.put( ef.push );
+		ef.close;
+		return result.data.to!string;
+	}
+
+	void main()
+	{
+		mixin( func1( "Output.ln( \"good-bye heaven\" ); "d ) );
+	}
+}

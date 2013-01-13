@@ -3,8 +3,8 @@ TARGET = yane_kl.exe
 DC = dmd
 MAKE = make
 MAKEFILE = yane_kl.mak
-TO_COMPILE = src\sworks\compo\util\strutil.d src\sworks\compo\util\output.d src\sworks\klisp\lisp.d src\sworks\klisp\klisp_file.d src\sworks\compo\win32\sjis.d src\sworks\compo\util\sequential_file.d src\sworks\compo\util\cached_buffer.d src\sworks\klisp\yane_kl.d src\sworks\klisp\token.d
-TO_LINK = src\sworks\compo\util\strutil.obj src\sworks\compo\util\output.obj src\sworks\klisp\lisp.obj src\sworks\klisp\klisp_file.obj src\sworks\compo\win32\sjis.obj src\sworks\compo\util\sequential_file.obj src\sworks\compo\util\cached_buffer.obj src\sworks\klisp\yane_kl.obj src\sworks\klisp\token.obj
+TO_COMPILE = src\sworks\compo\util\strutil.d src\sworks\compo\util\output.d src\sworks\klisp\lisp.d src\sworks\klisp\klisp_file.d src\sworks\compo\win32\sjis.d src\sworks\compo\util\sequential_file.d src\sworks\compo\util\dump_members.d src\sworks\compo\util\cached_buffer.d src\sworks\klisp\yane_kl.d src\sworks\klisp\token.d
+TO_LINK = src\sworks\compo\util\strutil.obj src\sworks\compo\util\output.obj src\sworks\klisp\lisp.obj src\sworks\klisp\klisp_file.obj src\sworks\compo\win32\sjis.obj src\sworks\compo\util\sequential_file.obj src\sworks\compo\util\dump_members.obj src\sworks\compo\util\cached_buffer.obj src\sworks\klisp\yane_kl.obj src\sworks\klisp\token.obj
 COMPILE_FLAG = -unittest -debug=yane_kl -Isrc
 LINK_FLAG =
 EXT_LIB =
@@ -24,11 +24,12 @@ $(TO_LINK) : $(MAKEFILE) $(EXT_LIB)
 src\sworks\compo\util\strutil.obj : src\sworks\compo\util\strutil.d
 src\sworks\compo\util\output.obj : src\sworks\compo\util\output.d
 src\sworks\klisp\lisp.obj : src\sworks\klisp\lisp.d src\sworks\compo\util\output.d src\sworks\klisp\klisp_file.d
-src\sworks\klisp\klisp_file.obj : src\sworks\klisp\klisp_file.d src\sworks\compo\util\sequential_file.d
+src\sworks\klisp\klisp_file.obj : src\sworks\klisp\klisp_file.d src\sworks\compo\util\sequential_file.d src\sworks\compo\util\cached_buffer.d
 src\sworks\compo\win32\sjis.obj : src\sworks\compo\util\strutil.d src\sworks\compo\win32\sjis.d
 src\sworks\compo\util\sequential_file.obj : src\sworks\compo\util\sequential_file.d src\sworks\compo\win32\sjis.d src\sworks\compo\util\cached_buffer.d
+src\sworks\compo\util\dump_members.obj : src\sworks\compo\util\dump_members.d
 src\sworks\compo\util\cached_buffer.obj : src\sworks\compo\util\cached_buffer.d
-src\sworks\klisp\yane_kl.obj : src\sworks\compo\util\output.d src\sworks\klisp\lisp.d src\sworks\klisp\klisp_file.d src\sworks\klisp\yane_kl.d src\sworks\klisp\token.d
+src\sworks\klisp\yane_kl.obj : src\sworks\compo\util\output.d src\sworks\klisp\lisp.d src\sworks\klisp\klisp_file.d src\sworks\compo\util\sequential_file.d src\sworks\compo\util\dump_members.d src\sworks\klisp\yane_kl.d src\sworks\klisp\token.d
 src\sworks\klisp\token.obj : src\sworks\klisp\klisp_file.d src\sworks\klisp\token.d
 
 ## PHONY TARGET
@@ -43,19 +44,21 @@ clean :
 clean_obj :
 	del $(TO_LINK)
 vwrite :
-	vwrite -ver="0.002(dmd2.060)" -prj=$(TARGET) -target=$(TARGET) $(TO_COMPILE)
+	vwrite -ver="0.003(dmd2.060)" -prj=$(TARGET) -target=$(TARGET) $(TO_COMPILE)
 ddoc :
 	$(DC) -c -o- -op -D -Dd $(COMPILE_FLAG) $(DDOC_FILE) $(TO_COMPILE) $(FLAG)
 show :
 	@echo ROOT = src\sworks\klisp\yane_kl.d
 	@echo TARGET = $(TARGET)
-	@echo VERSION = 0.002(dmd2.060)
+	@echo COMPILE FLAGS = $(COMPILE_FLAG)
+	@echo LINK FLAGS = $(LINK_FLAG)
+	@echo VERSION = 0.003(dmd2.060)
 run :
 	$(TARGET) $(FLAG)
 edit :
 	emacs $(TO_COMPILE)
 remake :
-	amm -unittest -debug=yane_kl m=yane_kl.mak v=0.002(dmd2.060) .\src\sworks\klisp\yane_kl.d $(FLAG)
+	amm -unittest -debug=yane_kl m=yane_kl.mak v=0.003(dmd2.060) .\src\sworks\klisp\yane_kl.d $(FLAG)
 
 debug :
 	ddbg $(TARGET)

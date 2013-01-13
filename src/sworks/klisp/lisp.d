@@ -1,6 +1,6 @@
 /** 空のLisp-like言語の実装。
- * Version:      0.002(dmd2.060)
- * Date:         2012-Nov-28 15:55:35
+ * Version:      0.003(dmd2.060)
+ * Date:         2013-Jan-14 02:44:54
  * Authors:      KUMA
  * License:      CC0
  */
@@ -50,11 +50,11 @@ struct SExp
 
 //------------------------------------------------------------------------------
 // S式の中身
-abstract class AddressPart
+class AddressPart
 {
 	// 中身。List 型、Symbol 型以外の型では戻り値の中身は自分自身
 	SExp contents() @property { return SExp(this); }
-	void contents( SExp ) @property { }
+	void contents( SExp ) @property{ };
 
 	// 評価する。自身が含まれる括弧深度以下の、自分以降の S式が ei.rest に入っている。
 	SExp eval( EvalInfo ei ) { return SExp(this); }
@@ -72,6 +72,7 @@ class EvalInfo
 	protected Appender!(SExp[]) _rest; // 評価待ちの S式。括弧の深度により配列に分けて格納されている。
 	protected bool _break_flag; // true -> break中
 	SExp[dstring] info;
+	SExp result; // 直前の評価結果
 
 	// break 中かどうか
 	bool breaking() @property const { return _break_flag; }
@@ -179,7 +180,13 @@ SExp popFront( ref SExp se )
 }
 
 // ei に残ってる式の先頭一つを評価する。
-SExp popEval( EvalInfo ei ) { assert( null !is ei ); return ei.rest.popFront.eval( ei ); }
+SExp popEval( EvalInfo ei )
+{
+	assert( null !is ei );
+	auto r = ei.rest.popFront.eval( ei );
+	ei.result = SExp( r.address );
+	return r;
+}
 
 // 現在の深度の式を全部評価する。
 // 戻り値は、全ての評価がリストで帰る。
@@ -455,7 +462,7 @@ class SymbolScope
 		GLOBAL, // ローカルスコープとグローバルスコープの両方に同じインスタンスを確保する。
 	}
 
-	private SymbolRoot[dstring] symbols;
+/*	private */ SymbolRoot[dstring] symbols;
 	SymbolScope parent;
 	DEFAULT_MODE mode;
 
@@ -476,9 +483,10 @@ class SymbolScope
 			if( null !is s ) return s.getInstance( filename, line );
 			if( null is r || r.mode == DEFAULT_MODE.GLOBAL ) r = ite;
 		}
-		s = new SymbolRoot( name.idup );
-		symbols[ name ] = s;
-		if( mode == DEFAULT_MODE.GLOBAL && null !is r ) r.symbols[ name ] = s;
+		auto iname = name.idup;
+		s = new SymbolRoot( iname );
+		symbols[ iname ] = s;
+		if( mode == DEFAULT_MODE.GLOBAL && null !is r ) r.symbols[ iname ] = s;
 		return s.getInstance( filename, line );
 	}
 
@@ -570,23 +578,24 @@ class SymbolScope
 //------------------------------------------------------------------------------
 // IKLispFile のパース
 
-/// kf 先頭から一つの式を変換する。その度 kf は縮む。
-SExp parse( alias TOKEN_FILTER )( IKLispFile kf, SymbolScope ss, int nest_level = 0 )
-	if( is( typeof(&TOKEN_FILTER) : TokenFilter ) )
+/// kt 先頭から一つの式を変換する。その度 kt は縮む。
+SExp parse( IKLispToken kt, SymbolScope ss )
 {
 	SExp s;
+	Token token;
 	try
 	{
-		auto l = kf.line;
-		auto token = TOKEN_FILTER( kf, nest_level );
+		token = kt.nextToken;
 
-		if     ( Token.TYPE.NULL == token.type ) { }
+		if     ( Token.TYPE.NULL == token.type || Token.TYPE.EOF == token.type ) { }
 		else if( Token.TYPE.CLOSE_BRACKET == token.type ) { }
 		else if( Token.TYPE.OPEN_BRACKET == token.type )
 		{
 			SExpAppender acc;
-			for( ; acc.put( kf.parse!TOKEN_FILTER( ss, nest_level+1 ) ) ; ){ }
+			kt.incNest;
+			for( ; acc.put( kt.parse( ss ) ) ; ){ }
 			s = SExp( new List( acc.data ) );
+			kt.decNest;
 		}
 		else if( Token.TYPE.INT == token.type ) s = S!Int( token.value.to!int );
 		else if( Token.TYPE.FLOAT == token.type ) s = S!Double( token.value.to!double );
@@ -594,24 +603,31 @@ SExp parse( alias TOKEN_FILTER )( IKLispFile kf, SymbolScope ss, int nest_level 
 		// シンボル名
 		else
 		{
-			s = ss[ kf.filename, l, token.value ];
+			s = ss[ kt.filename, token.line, token.value ];
 			// FuncBase 型のシンボルだった場合は特殊パーサを呼び出す。
 			auto func = cast(FuncBase)(s.car.address);
 			if( null !is func )
-				s.cdr = new SExp(func.filter( ss, fs=>kf.parse!TOKEN_FILTER( fs, nest_level ) ));
+				s.cdr = new SExp(func.filter( ss, fs=>kt.parse( fs ) ));
 		}
 	}
-	catch( KLispMessage m ) throw new KLispException( kf.filename, kf.line, kf.buffer, m.msg );
+	catch( KLispMessage m ) throw new KLispException( kt.filename, token.line, token.value, m.msg );
 
 	return s;
 }
 
 // パースし直ちに評価する。
-SExp eval( alias TOKEN_FILTER )( IKLispFile cf, SymbolScope ss )
-	if( is( typeof(&TOKEN_FILTER) : TokenFilter ) )
+SExp eval( IKLispToken kt, SymbolScope ss )
 {
 	SExpAppender acc;
-	for( ; acc.put( cf.parse!TOKEN_FILTER( ss ) ); ){ }
+	for( ; acc.put( kt.parse( ss ) ); ){ }
 	auto ei = new EvalInfo;
 	return ei.evalAllChild( acc.data );
+}
+
+//------------------------------------------------------------------------------
+//------------------------------------------------------------------------------
+// CTFE
+class CTParser( alias TOKEN_FILTER )
+{
+	
 }

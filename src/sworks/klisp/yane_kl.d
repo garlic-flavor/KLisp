@@ -1,6 +1,6 @@
 /** YaneLisp 似非互換実装
- * Version:      0.002(dmd2.060)
- * Date:         2012-Nov-28 15:55:35
+ * Version:      0.003(dmd2.060)
+ * Date:         2013-Jan-14 02:44:54
  * Authors:      KUMA
  * License:      CC0
  */
@@ -20,59 +20,68 @@ enum BRACKET = "()[]{}《》【】〔〕〈〉［］"d;
 enum QUOTE = "''\"\"``「」『』"d;
 enum SINGLE_KEYWORD = ";:"d ~ BRACKET;
 
-// ikf 先頭から空白文字とコメントを省く。
+// file 先頭から空白文字とコメントを省く。
 // ';' 以降は行末までコメント
 // import mode では Lisp の括弧内にあり、行頭が "//%" で始まらない行は連続した文字列であるとする。
-Token import_mode_filter( IKLispFile ikf, int nest_level )
+class YaneTokenImport : KLispToken
 {
-	for( dchar d = ikf.peek ; '\0' != d ; )
-	{
-		d = ikf.peek;
+	this( IKLispFile kf ){ super( kf ); }
 
-		if( ikf.newline )
+	Token nextToken()
+	{
+		if( !adjustNest ) return Token();
+
+		for( dchar d ; !file.eof ; )
 		{
-			if     ( "//%"d == ikf.peek_cache(3) ) ikf.discard(3);
-			else if( 0 == nest_level )
+			d = file.front;
+
+			if( file.newline )
 			{
-				for( ; ; ) { d = ikf.discard; if( '\0' == d || ikf.newline ) break; }
+				if     ( "//%"d == file.peek(3) ) file.discard(3);
+				else if( 0 == nest )
+				{
+					for( ; !file.eof ; ) { d = file.discard; if( file.newline ) break; }
+				}
+				else
+				{
+					file.flush;
+					auto line = file.line;
+					for( ; dchar.init != d ; d = file.front )
+					{
+						if( file.newline && '/' == d && "//%"d == file.peek(3) ) break;
+						file.push( d );
+					}
+					return Token( Token.TYPE.STRING, line, file.stack );
+				}
 			}
 			else
 			{
-				ikf.flush;
-				for( ; '\0' != d ; d = ikf.discard )
-				{
-					if( ikf.newline && '/' == d && "//%"d == ikf.peek_cache(3) ) break;
-					ikf.push( d );
-				}
-				return Token( Token.TYPE.STRING, ikf.buffer );
+				if     ( ';' == d ) for( ; !file.eof ; ){ d = file.discard; if( file.newline )break; }
+				else if( d.isWhite || d == '　' ) file.discard;
+				else break;
 			}
 		}
-		else
+		return chomp_token!( QUOTE, SINGLE_KEYWORD );
+	}
+}
+//
+class YaneTokenInclude : KLispToken
+{
+	this( IKLispFile kf ){ super( kf ); }
+	Token nextToken()
+	{
+		if( !adjustNest ) return Token();
+		for( dchar d ; !file.eof ;  )
 		{
-			if     ( ';' == d ) for( ; ; ) { d = ikf.discard; if( '\0' == d || ikf.newline ) break; }
-			else if( d.isWhite || d == '　' ) ikf.discard;
+			d = file.front;
+			if     ( ';' == d ) for( ; !file.eof ; ) { d = file.discard; if( file.newline ) break; }
+			else if( d.isWhite || d == '　' ) file.discard;
 			else break;
 		}
+		return chomp_token!( QUOTE, SINGLE_KEYWORD );
 	}
-
-	return Token();
 }
 
-//
-Token include_mode_filter( IKLispFile ikf, int nest_level )
-{
-	for( dchar d ; '\0' != d ;  )
-	{
-		d = ikf.peek;
-		if     ( ';' == d ) for( ; ; ) { d = ikf.discard; if( '\0' == d || ikf.newline ) break; }
-		else if( d.isWhite || d == '　' ) ikf.discard;
-		else break;
-	}
-	return Token();
-}
-
-alias _nextToken!( import_mode_filter, QUOTE, SINGLE_KEYWORD ) import_filter;
-alias _nextToken!( include_mode_filter, QUOTE, SINGLE_KEYWORD ) include_filter;
 alias _KLispFile!( BRACKET ) YaneFile;
 
 //------------------------------------------------------------------------------
@@ -845,15 +854,16 @@ class Defun : FuncBase
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
 // インポート
-class _includeExp(alias FILTER, dstring NAME ) : FuncBase
+class _includeExp(alias TOKEN, dstring NAME ) : FuncBase
 {
 	this(){ super( NAME ); }
 	override SExp filter( SymbolScope parent_ss, Parser parser )
 	{
 		auto filename = parser( parent_ss ).toDstring.to!string;
 		auto yf = new YaneFile( filename );
+		auto yt = new TOKEN( yf );
 		SExpAppender acc;
-		for( ; acc.put( sworks.klisp.lisp.parse!FILTER( yf, parent_ss ) ) ; ){ }
+		for( ; acc.put( sworks.klisp.lisp.parse( yt, parent_ss ) ) ; ){ }
 		return acc.data;
 	}
 
@@ -864,8 +874,8 @@ class _includeExp(alias FILTER, dstring NAME ) : FuncBase
 		return result;
 	}
 }
-alias _includeExp!( include_filter, "include" ) IncludeExp;
-alias _includeExp!( import_filter, "import" ) ImportExp;
+alias _includeExp!( YaneTokenInclude, "include" ) IncludeExp;
+alias _includeExp!( YaneTokenImport, "import" ) ImportExp;
 
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
@@ -874,7 +884,9 @@ void assertEval( dstring code, dstring value, string file = __FILE__, int line =
 {
 	auto ss = new SymbolScope;
 	ss.entry!( sworks.klisp.yane_kl );
-	auto result = (new YaneFile( code )).eval!include_filter( ss ).toDstringAll;
+	auto yf = new YaneFile( code );
+	auto yt = new YaneTokenInclude( yf );
+	auto result = yt.eval( ss ).toDstringAll;
 	if( result != value ) throw new Exception( (result ~ " != " ~ value).to!string, file, line );
 }
 
@@ -891,6 +903,7 @@ unittest
 
         // 数値の加算
         // 返し値は文字列として扱われる。また加算のときに文字列は強制的に数値に変換される。
+
         assertEval("(add 1 2 3 4 5 6 7 8 9 10)", "55");
 
         assertEval("(add '1' '2' '3' '4' '5' '6' '7' '8' '9' '10')", "55");
@@ -1169,7 +1182,7 @@ unittest
         
         // include命令は、ファイルから読み込み、それをS式として式の評価として返す。
 
-        // importはC/C++/C#のソースファイルを対象とするため、LISP行は、 //% で開始している必要があり、
+        // importはC/C++ /C#のソースファイルを対象とするため、LISP行は、 //% で開始している必要があり、
         // それ以外の行は、文字列として扱われる。
         // 生成元 : Debug/test.cpp → 生成先 : Debug/testout.cpp
         // それぞれのファイルを見ると、何か参考になるかも。
@@ -1181,6 +1194,7 @@ unittest
           new Lisp().eval(exp);
         }
         */
+
         Output.ln( " ********** unittest 正常終了。 **********" );
 	}
 	catch( Throwable t )
@@ -1191,14 +1205,28 @@ unittest
 }
 
 debug( yane_kl ):
-
+import sworks.compo.util.sequential_file;
+import sworks.compo.util.dump_members;
 void main()
 {
 	try
 	{
 		auto ss = new SymbolScope;
 		ss.entry!( sworks.klisp.yane_kl );
-		(new YaneFile( "lisp.txt" ) ).eval!include_filter( ss );
+		auto yf = new YaneFile( "lisp.txt" );
+		auto yt = new YaneTokenInclude( yf );
+		yt.eval( ss );
+//Output.ln( (new YaneFile( "test.cpp"d )).eval!include_filter(ss).toDstringAll );
+/*
+		auto yf = new YaneFile( "test.cpp", ENCODING.NULL, 2048 );
+		for( ; !yf.eof ; )
+		{
+			auto t = yf.import_filter( yf.nest );
+			Output.ln( to!string( t.type ), " : ", t.value );
+		}
+		Output.ln( yf.getBenchmark.dump_members );
+//*/
+
 	}
 	catch( Throwable t ) Output.ln( t.toString );
 
