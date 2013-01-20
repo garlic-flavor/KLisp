@@ -1,8 +1,9 @@
 /** コンソールへの出力を制御する。
- * Version:      0.003(dmd2.060)
- * Date:         2013-Jan-14 02:44:54
- * Authors:      KUMA
- * License:      CC0
+ * \version      0.0001.dmd2.052
+ * \date         2011-Jun-13 13:41:20
+ * \author       KUMA
+ * \par license:
+ * CC0
  */
 module sworks.compo.util.output;
 private import std.stdio, std.range, std.conv, std.traits;

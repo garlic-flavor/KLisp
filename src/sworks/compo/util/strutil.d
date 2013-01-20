@@ -1,8 +1,9 @@
 /**
- * Version:      0.003(dmd2.060)
- * Date:         2013-Jan-14 02:44:54
- * Authors:      KUMA
- * License:      CC0
+ * \version      0.0005 dmd2.055
+ * \date         2011-Sep-21 02:47:54
+ * \author       KUMA
+ * \par license:
+ * CC0
  */
 module sworks.compo.util.strutil;
 

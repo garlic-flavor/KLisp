@@ -1,8 +1,4 @@
-/** キャッシュ付き逐次ファイル読み込み。様々なファイルのパースにも!
- * Version:      0.003(dmd2.060)
- * Date:         2013-Jan-14 02:44:54
- * Authors:      KUMA
- * License:      CC0
+ /** キャッシュ付き逐次ファイル読み込み。様々なファイルのパースにも!
  */
 module sworks.compo.util.cached_buffer;
 import std.array, std.traits;

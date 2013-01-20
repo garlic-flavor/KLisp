@@ -1,6 +1,6 @@
 /**
- * Version:      0.003(dmd2.060)
- * Date:         2013-Jan-14 02:44:54
+ * Version:      0.004(dmd2.061)
+ * Date:         2013-Jan-21 00:02:00
  * Authors:      KUMA
  * License:      CC0
 */
@@ -29,11 +29,12 @@ class KLispException : Throwable
 	this( string filename, size_t line_num, const(dchar)[] cont, dstring msg
 	    , string source_filename = __FILE__, int line = __LINE__ )
 	{
-		super( "KLispException", source_filename, line );
 		this.msg = newline ~ filename ~ " を解析中に問題が発生しました。" ~ newline ~ line_num.to!string
 		       ~ " 行目 : 問題の箇所\"" ~ cont.toUTF8 ~ "\"" ~ newline ~ msg.to!string ~ newline;
+		if( __ctfe ) super( this.msg, source_filename, line );
+		else super( "KLispException", source_filename, line );
 	}
-	string toString() @property { return msg; }
+	override string toString() @property { return msg; }
 	string stack_trace() @property { return super.toString; }
 }
 
@@ -44,7 +45,7 @@ class KLispMessage : Throwable
 	dstring msg;
 
 	this( dstring msg ) { super( "KLisp Message" ); this.msg = msg; }
-	string toString() @property { return msg.to!string; }
+	override string toString() @property { return msg.to!string; }
 	string stack_trace() @property { return super.toString; }
 }
 
@@ -81,7 +82,7 @@ interface IKLispFile
  * 括弧は dchar 1文字で構成され
  * 開き括弧 BRACKET[2n] に対応する閉じ括弧は BRACKET[2n+1] とする。
  */
-class _KLispFile( dstring BRACKET ) : IKLispFile
+class TKLispFile( dstring BRACKET ) : IKLispFile
 {
 	private SequentialBuffer _file;
 	private dchar[] _nest;
@@ -94,6 +95,7 @@ class _KLispFile( dstring BRACKET ) : IKLispFile
 
 	// UTF-32 文字列を渡した場合はファイルの中身であると判断する。
 	this( dstring cache ){ this._file = cache.getSequentialBuffer; }
+	this( string f, dstring cache ){ this._file = getSequentialBuffer( f, cache ); }
 
 	string filename() @property const{ return _file.filename; }
 	bool eof() @property const { return _file.eof; }
@@ -175,7 +177,7 @@ debug(klisp_file)
 	{
 		try
 		{
-			auto ef = new _KLispFile!"()"( "HELLO WORLD\r\n"d );
+			auto ef = new TKLispFile!"()"( "HELLO WORLD\r\n"d );
 			for( auto d = ef.front ; !ef.eof ; d = ef.push ) Output( d );
 			ef.close;
 		}
@@ -190,7 +192,7 @@ debug( ct_klisp_file )
 	string func1( dstring cont )
 	{
 		Appender!dstring result;
-		auto ef = new _KLispFile!"()"( cont );
+		auto ef = new TKLispFile!"()"( cont );
 		for( ; !ef.eof ; ) result.put( ef.push );
 		ef.close;
 		return result.data.to!string;

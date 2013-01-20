@@ -1,6 +1,6 @@
 /** ファイルを UTF-32 で一字ずつ読み込み。
- * Version:      0.003(dmd2.060)
- * Date:         2013-Jan-14 02:44:54
+ * Version:      0.004(dmd2.061)
+ * Date:         2013-Jan-21 00:02:00
  * Authors:      KUMA
  * License:      CC0
  */
@@ -203,6 +203,11 @@ SequentialBuffer getSequentialBuffer( string filename, ENCODING def_enc = ENCODI
 SequentialBuffer getSequentialBuffer( const(dchar)[] buf )
 {
 	return new SequentialBuffer( "DSTRING", new UTF32Buffer( buf ) );
+}
+
+SequentialBuffer getSequentialBuffer( string filename, const(dchar)[] buf )
+{
+	return new SequentialBuffer( filename, new UTF32Buffer( buf ) );
 }
 
 size_t readUTFx( ENCODING CODE, TCHAR)( ICache1 cache, dchar[] buf )

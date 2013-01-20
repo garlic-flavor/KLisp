@@ -1,9 +1,3 @@
-/**
- * Version:      0.003(dmd2.060)
- * Date:         2013-Jan-14 02:44:54
- * Authors:      KUMA
- * License:      CC0
-*/
 module sworks.compo.util.dump_members;
 
 import std.array, std.ascii, std.conv, std.range, std.traits;

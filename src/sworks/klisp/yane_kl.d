@@ -1,6 +1,6 @@
 /** YaneLisp 似非互換実装
- * Version:      0.003(dmd2.060)
- * Date:         2013-Jan-14 02:44:54
+ * Version:      0.004(dmd2.061)
+ * Date:         2013-Jan-21 00:02:00
  * Authors:      KUMA
  * License:      CC0
  */
@@ -27,7 +27,7 @@ class YaneTokenImport : KLispToken
 {
 	this( IKLispFile kf ){ super( kf ); }
 
-	Token nextToken()
+	override Token nextToken()
 	{
 		if( !adjustNest ) return Token();
 
@@ -68,7 +68,7 @@ class YaneTokenImport : KLispToken
 class YaneTokenInclude : KLispToken
 {
 	this( IKLispFile kf ){ super( kf ); }
-	Token nextToken()
+	override Token nextToken()
 	{
 		if( !adjustNest ) return Token();
 		for( dchar d ; !file.eof ;  )
@@ -82,7 +82,13 @@ class YaneTokenInclude : KLispToken
 	}
 }
 
-alias _KLispFile!( BRACKET ) YaneFile;
+alias YaneLispInclude = RTKLisp!( TKLispFile!BRACKET, YaneTokenInclude, s=>s.entry!(sworks.klisp.yane_kl)() );
+alias YaneLispImport = RTKLisp!( TKLispFile!BRACKET, YaneTokenImport, s=>s.entry!(sworks.klisp.yane_kl)() );
+
+dstring InlineYaneLisp( dstring CODE )()
+{
+	return InlineKLisp!( TKLispFile!BRACKET, YaneTokenInclude, s=>s.entry!(sworks.klisp.yane_kl)(), CODE )();
+}
 
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
@@ -93,6 +99,7 @@ alias _KLispFile!( BRACKET ) YaneFile;
 class Null : AddressPart
 {
 	override dstring toDstring() @property { return "#null"; }
+	override dstring toInitializer() @property { return "new Null()"; }
 }
 
 //------------------------------------------------------------------------------
@@ -103,6 +110,7 @@ class True : AddressPart
 	override int toInt() @property { return 1; }
 	override double toDouble() @property { return 1.0; }
 	override dstring toDstring() @property { return "#true"; }
+	override dstring toInitializer() @property { return "new True()"; }
 }
 
 //------------------------------------------------------------------------------
@@ -110,6 +118,7 @@ class True : AddressPart
 class False : AddressPart
 {
 	override dstring toDstring() @property { return "#false"; }
+	override dstring toInitializer() @property { return "new False()"; }
 }
 
 //------------------------------------------------------------------------------
@@ -173,27 +182,29 @@ class WriteExp : FuncBase
 {
 	this(){ super( "write" ); }
 
-	override SExp filter( SymbolScope parent_ss, Parser parser )
+	override SExp filter( SExp prev, SymbolStore ss, Parser parser )
 	{
-		return SExp( new FuncBody( parent_ss[ "", 0, "outfile"] ) );
-	}
-
-	class FuncBody : AddressPart
-	{
-		SExp outfile;
-		this( SExp outfile ) { this.outfile = outfile; }
-
-		SExp eval( EvalInfo ei )
-		{
-			auto filename = outfile.car.toDstring.to!string;
-			auto data = ei.evalAll.toDstringAll;
-			if( filename.exists ) filename.append( data.to!string );
-			else filename.write( data.to!string );
-
-			return S!Dstr( data );
-		}
+		return SExp( new WriteExpBody( ss[ "", 0, "outfile"] ) );
 	}
 }
+
+class WriteExpBody : AddressPart
+{
+	SExp outfile;
+	this( SExp outfile ) { this.outfile = outfile; }
+
+	override SExp eval( EvalInfo ei )
+	{
+		auto filename = outfile.car.toDstring.to!string;
+		auto data = ei.evalAll.toDstringAll;
+		if( filename.exists ) filename.append( data.to!string );
+		else filename.write( data.to!string );
+
+		return S!Dstr( data );
+	}
+	override dstring toInitializer() @property { return "new WriteExpBody(" ~ outfile.toInitializer ~ ")"; }
+}
+
 
 //------------------------------------------------------------------------------
 // ファイルを消去する。
@@ -284,44 +295,51 @@ class Eval : FuncBase
 //
 class ForEachExp : FuncBase
 {
+	uint counter;
 	this( ) { super( "foreach" ); }
 
-	override SExp filter( SymbolScope parent_ss, Parser parser )
+	override SExp filter( SExp prev, SymbolStore ss, Parser parser )
 	{
-		auto symbol_scope = new SymbolScope;
-		auto one_symbol = parser( symbol_scope );
+		ss.pushPrefix( "foreach" ~ (counter++).to!dstring, SymbolStore.PRIVATE_MODE_PREFIX );
+		auto one_symbol = parser();
 		if( !one_symbol.isTypeOf!Symbol )
 			throw new KLispMessage( "foreach 関数の第一引数はシンボル名である必要があります。" );
 
-		auto list = parser( parent_ss );
-		symbol_scope.parent = parent_ss;
-		auto func_body = parser( symbol_scope );
+		ss.pushPrefix( "body" );
+		auto list = parser();
+		auto func_body = parser();
+		ss.popPrefix;
+		ss.popPrefix;
 
-		return SExp( new FuncBody( one_symbol, list, func_body ) );
+		return SExp( new ForEachExpBody( one_symbol, list, func_body ) );
 	}
-
 	override SExp eval( EvalInfo ei ) { return SExp(); }
+}
 
-	class FuncBody : AddressPart
+class ForEachExpBody : AddressPart
+{
+	SExp one;
+	SExp list;
+	SExp func;
+	this( SExp o, SExp l, SExp func ) { this.one = o; this.list = l; this.func = func; }
+	override SExp eval( EvalInfo ei )
 	{
-		SExp one;
-		SExp list;
-		SExp func;
-		this( SExp o, SExp l, SExp func ) { this.one = o; this.list = l; this.func = func; }
-		override SExp eval( EvalInfo ei )
+		Appender!dstring result;
+		for( auto ite = list.car ; !ite.empty && !ei.breaking ; ite.popFront )
 		{
-			Appender!dstring result;
-			for( auto ite = list.car ; !ite.empty && !ei.breaking ; ite.popFront )
-			{
-				one.car = SExp( ite.address );
-				auto r = ei.evalAllChild( func );
-				if( !r.empty ) result.put( r.toDstring );
-			}
-			ei.rest.clear;
-			return S!Dstr( result.data );
+			one.car = SExp( ite.address );
+			auto r = ei.evalAllChild( func );
+			if( !r.empty ) result.put( r.toDstring );
 		}
+		ei.rest.clear;
+		return S!Dstr( result.data );
+	}
+	override dstring toInitializer() @property
+	{
+		return "new ForEachExpBody(" ~ one.toInitializer ~ ", " ~ list.toInitializer ~ ", " ~ func.toInitializer ~ ")";
 	}
 }
+
 
 //------------------------------------------------------------------------------
 //
@@ -355,87 +373,102 @@ class WhileExp : FuncBase
 //
 class ForExp : FuncBase
 {
+	uint counter;
 	this(){ super( "for" ); }
-	override SExp filter( SymbolScope parent_ss, Parser parser )
+	override SExp filter( SExp prev, SymbolStore ss, Parser parser )
 	{
-		auto ss = new SymbolScope;
-		auto counter = parser( ss );
-		if( !counter.isTypeOf!Symbol )
+		ss.pushPrefix( "for" ~ (counter++).to!dstring, SymbolStore.PRIVATE_MODE_PREFIX );
+		auto c = parser();
+		if( !c.isTypeOf!Symbol )
 			throw new KLispMessage( "for 関数の第一引数にはループカウンタ用のシンボルを渡して下さい。" );
-		auto start = parser(parent_ss);
-		auto end = parser(parent_ss);
-		ss.parent = parent_ss;
-		auto prog = parser(ss);
-		return SExp( new FuncBody( counter, start, end, prog ) );
-	}
+		ss.pushPrefix( "body" );
+		auto start = parser();
+		auto end = parser();
+		auto prog = parser();
+		ss.popPrefix;
+		ss.popPrefix;
 
-	class FuncBody : AddressPart
+		return SExp( new ForExpBody( c, start, end, prog ) );
+	}
+}
+
+class ForExpBody : AddressPart
+{
+	SExp counter;
+	SExp start, end, prog;
+	this( SExp counter, SExp start, SExp end, SExp prog )
 	{
-		SExp counter;
-		SExp start, end, prog;
-		this( SExp counter, SExp start, SExp end, SExp prog )
+		this.counter = counter;
+		this.start = start; this.end = end; this.prog = prog;
+	}
+	override SExp eval( EvalInfo ei )
+	{
+		auto i = ei.evalAllChild( start ).toInt;
+		auto end_count = ei.evalAllChild( end ).toInt;
+		auto ic = new Int( i );
+		counter.car = SExp( ic );
+		SExp r;
+		for( ; !ei.breaking && i <= end_count ; i++ )
 		{
-			this.counter = counter;
-			this.start = start; this.end = end; this.prog = prog;
+			ic.value = i;
+			r = ei.evalAllChild( prog );
 		}
-		override SExp eval( EvalInfo ei )
-		{
-			auto i = ei.evalAllChild( start ).toInt;
-			auto end_count = ei.evalAllChild( end ).toInt;
-			auto ic = new Int( i );
-			counter.car = SExp( ic );
-			SExp r;
-			for( ; !ei.breaking && i <= end_count ; i++ )
-			{
-				ic.value = i;
-				r = ei.evalAllChild( prog );
-			}
-			return r;
-		}
+		return r;
+	}
+	override dstring toInitializer() @property
+	{
+		return "new ForExpBody(" ~ counter.toInitializer ~ ", " ~ start.toInitializer ~ ", "
+		  ~ end.toInitializer ~ ", " ~ prog.toInitializer ~ ")";
 	}
 }
 
 //------------------------------------------------------------------------------
 class DownForExp : FuncBase
 {
+	uint counter;
 	this(){ super( "downfor" ); }
-	override SExp filter( SymbolScope parent_ss, Parser parser )
+	override SExp filter( SExp prev, SymbolStore ss, Parser parser )
 	{
-		auto ss = new SymbolScope;
-		auto counter = parser( ss );
-		if( !counter.isTypeOf!Symbol )
+		ss.pushPrefix( "downfor" ~ (counter++).to!dstring, SymbolStore.PRIVATE_MODE_PREFIX );
+		auto c = parser();
+		if( !c.isTypeOf!Symbol )
 			throw new KLispMessage( "for 関数の第一引数にはループカウンタ用のシンボルを渡して下さい。" );
-		auto start = parser(parent_ss);
-		auto end = parser(parent_ss);
-		ss.parent = parent_ss;
-		auto prog = parser(ss);
-		return SExp( new FuncBody( counter, start, end, prog ) );
+		ss.pushPrefix( "body" );
+		auto start = parser();
+		auto end = parser();
+		auto prog = parser();
+		return SExp( new DownForBody( c, start, end, prog ) );
+	}
+}
+
+class DownForBody : AddressPart
+{
+	SExp counter;
+	SExp start, end, prog;
+	this( SExp counter, SExp start, SExp end, SExp prog )
+	{
+		this.counter = counter;
+		this.start = start; this.end = end; this.prog = prog;
 	}
 
-	class FuncBody : AddressPart
+	override SExp eval( EvalInfo ei )
 	{
-		SExp counter;
-		SExp start, end, prog;
-		this( SExp counter, SExp start, SExp end, SExp prog )
+		auto i = ei.evalAllChild( start ).toInt;
+		auto end_count = ei.evalAllChild( end ).toInt;
+		SExp r;
+		auto ic = new Int( i );
+		counter.car = SExp( ic );
+		for( ; !ei.breaking && end_count <= i ; i-- )
 		{
-			this.counter = counter;
-			this.start = start; this.end = end; this.prog = prog;
+			ic.value = i;
+			r = ei.evalAllChild( prog );
 		}
-
-		override SExp eval( EvalInfo ei )
-		{
-			auto i = ei.evalAllChild( start ).toInt;
-			auto end_count = ei.evalAllChild( end ).toInt;
-			SExp r;
-			auto ic = new Int( i );
-			counter.car = SExp( ic );
-			for( ; !ei.breaking && end_count <= i ; i-- )
-			{
-				ic.value = i;
-				r = ei.evalAllChild( prog );
-			}
-			return r;
-		}
+		return r;
+	}
+	override dstring toInitializer() @property
+	{
+		return "new DownForBody(" ~ counter.toInitializer ~ ", " ~ start.toInitializer ~ ", "
+		      ~ end.toInitializer ~ ", " ~ prog.toInitializer ~ ")";
 	}
 }
 
@@ -461,54 +494,64 @@ SExp forever( EvalInfo ei )
 // 実行が、EvalInfo.breaking == true で終わってきた時、自身が新規導入したスコープの親スコープに break で指定されたシンボル名が確保されてたら EvalInfo.recover する。
 class BreakScope : FuncBase
 {
-	enum KEYWORD = "break_keyword"d;
-
+	size_t counter;
 	this(){ super( ":" ); }
 
-	override SExp filter( SymbolScope parent_ss, Parser parser )
+	override SExp filter( SExp prev, SymbolStore ss, Parser parser )
 	{
-		auto ss = new SymbolScope( parent_ss );
+		auto name = prev.toDstring;
+		ss.pushPrefix( "break_scope"d ~ (counter++).to!dstring );
 		SExpAppender acc;
-		for( ; acc.put( parser(ss) ) ; ) { }
-		return SExp( new FuncBody( parent_ss, acc.data ) );
+		for( ; acc.put( parser() ) ; ) { }
+		ss.popPrefix;
+
+		return SExp( new BreakScopeBody( name, acc.data ) );
 	}
 
 	override SExp eval( EvalInfo ei ){ return SExp(); }
+}
 
-	class FuncBody : AddressPart
+class BreakScopeBody : AddressPart
+{
+
+	dstring label;
+	SExp _body;
+	this( dstring label, SExp _body )
 	{
-		SymbolScope _parent_ss;
-		SExp _body;
-		this( SymbolScope parent_ss, SExp _body )
-		{
-			this._parent_ss = parent_ss;
-			this._body = _body;
-		}
+		this.label = label;
+		this._body = _body;
+	}
 
-		override SExp eval( EvalInfo ei )
+	override SExp eval( EvalInfo ei )
+	{
+		auto result = ei.evalAllChild( _body );
+		if( ei.breaking )
 		{
-			auto result = ei.evalAllChild( _body );
-			if( ei.breaking )
-			{
-				SExp* p = KEYWORD in ei.info;
-				if( null is p || _parent_ss.have( p.toDstring ) ) ei.recover;
-			}
-			return result;
+			SExp* p = Break.KEYWORD in ei.info;
+			if( null is p || label == p.toDstring ) ei.recover;
 		}
+		return result;
+	}
+
+	override dstring toInitializer() @property
+	{
+		return "new BreakScopeBody(`" ~ label ~ "`, " ~ _body.toInitializerAll ~ ")";
 	}
 }
 
 //------------------------------------------------------------------------------
 class Break : FuncBase
 {
+	enum KEYWORD = "break_keyword"d;
+
 	this(){ super( "break" ); }
 
 	override SExp eval( EvalInfo ei )
 	{
 		if( ei.remain )
 		{
-			if( ei.rest.isTypeOf!Symbol ) ei.info[BreakScope.KEYWORD] = ei.rest.popFront;
-			else ei.info[BreakScope.KEYWORD] = ei.popEval;
+			if( ei.rest.isTypeOf!Symbol ) ei.info[KEYWORD] = ei.rest.popFront;
+			else ei.info[KEYWORD] = ei.popEval;
 		}
 		ei.breakOut;
 		return SExp();
@@ -597,7 +640,6 @@ class Switch : FuncBase
 	}
 }
 
-
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
 // 数値関係
@@ -633,7 +675,6 @@ alias compExp!"<" lt;
 alias compExp!">" gt;
 alias compExp!">=" ge;
 alias compExp!"<=" le;
-
 
 
 //------------------------------------------------------------------------------
@@ -718,7 +759,6 @@ SExp length( EvalInfo ei )
 	return S!Int( i );
 }
 
-
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
 // 文字列関係
@@ -735,7 +775,6 @@ SExp addto( EvalInfo ei )
 	target.car = r;
 	return r;
 }
-
 
 //------------------------------------------------------------------------------
 // 文字の置換
@@ -785,7 +824,6 @@ SExp neq( EvalInfo ei )
 	return a.toDstring != b.toDstring ? S!True : S!False;
 }
 
-
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
 // 関数定義
@@ -796,75 +834,89 @@ SExp neq( EvalInfo ei )
 // @params に引数全てのリストが入っています。
 class Defun : FuncBase
 {
+	uint counter;
 	this() { super( "func" ); }
 
-	override SExp filter( SymbolScope parent_ss, Parser parser )
+	override SExp filter( SExp prev, SymbolStore ss, Parser parser )
 	{
-		auto ss = new SymbolScope( parent_ss );
-		ss.local( "@params"d, S!Undef );
-		for( size_t i = 0 ; i < 10 ; i++ ) ss.local( "@"d ~ i.to!dstring, S!Undef );
-		auto func_symbol = cast(Symbol)parser( parent_ss ).address;
+		auto func_symbol = cast(Symbol)parser().address;
 		if( null is func_symbol )
 			throw new KLispMessage( " func 関数の第一引数は関数名を格納するシンボル名である必要があります。" );
-		auto func_body = parser( ss );
-		func_symbol.contents = SExp( new FuncBody( func_symbol, ss, func_body ) );
+
+		ss.pushPrefix( "func" ~ (counter++).to!dstring );
+		auto params = ss.local( func_symbol.filename, func_symbol.line, "@params"d );
+		SExp[10] p;
+		for( size_t i = 0 ; i < 10 ; i++ )
+		{
+			p[i] = ss.local( func_symbol.filename, func_symbol.line, "@"d ~ i.to!dstring );
+		}
+		auto func_body = parser( );
+		ss.popPrefix;
+		func_symbol.contents = SExp( new DefunBody( func_symbol.name, params, p, func_body ) );
 		return SExp();
 	}
 	override SExp eval( EvalInfo ei ){ ei.rest.clear; return SExp(); }
+}
 
-	class FuncBody : AddressPart
+class DefunBody : AddressPart
+{
+	dstring name;
+	SExp _body;
+	SExp _params;
+	SExp[10] _arg;
+	this( dstring name, SExp ps, SExp[10] p, SExp func_body )
 	{
-		dstring name;
-		string filename;
-		size_t line;
-		SymbolScope ss;
-		SExp _body;
-		SExp _params;
-		SExp[10] _arg;
-		this( Symbol symbol, SymbolScope ss, SExp func_body )
-		{
-			this.name = symbol.name;
-			this.filename = symbol.filename;
-			this.line = symbol.line;
-			this.ss = ss;
-			this._body = func_body;
-			_params = ss[ filename, line, "@params" ];
-			for( size_t i = 0 ; i < 10 ; i++ ) _arg[i] = ss[ filename, line, "@"d ~ i.to!dstring ];
-		}
+		this.name = name;
+		this._params = ps;
+		this._arg[] = p;
+		this._body = func_body;
+	}
 
-		override SExp eval( EvalInfo ei )
-		{
-			SExpAppender acc;
-			SExp p, ite;
+	override SExp eval( EvalInfo ei )
+	{
+		SExpAppender acc;
+		SExp p, ite;
 
-			for( size_t i = 0 ; i < _arg.length ; i++ )
-			{
-				ite = ei.rest.popFront;
-				if( ite.isTypeOf!Symbol ) p = ite.car;
-				else p = ei.evalAllChildResult( ite );
-				_arg[i].car = p;
-				acc.put( p.dupAll );
-			}
-			_params.car = acc.data;
-			return ei.evalAllChild( _body );
+		for( size_t i = 0 ; i < _arg.length ; i++ )
+		{
+			ite = ei.rest.popFront;
+			if( ite.isTypeOf!Symbol ) p = ite.car;
+			else p = ei.evalAllChildResult( ite );
+			_arg[i].car = p;
+			acc.put( p.dupAll );
 		}
+		_params.car = acc.data;
+		return ei.evalAllChild( _body );
+	}
+
+	override dstring toInitializer() @property
+	{
+		auto result = appender( "new DefunBody(`"d );
+		result.put( name );
+		result.put( "`, " );
+		result.put( _params.toInitializer );
+		result.put( ", " );
+		for( size_t i = 0 ; i < _arg.length ; i++ )
+		{
+			result.put( _arg[i].toInitializer );
+			result.put( ", " );
+		}
+		result.put( _body.toInitializer );
+		result.put( ")" );
+		return result.data;
 	}
 }
 
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
 // インポート
-class _includeExp(alias TOKEN, dstring NAME ) : FuncBase
+class TincludeExp(alias LISPER, dstring NAME ) : FuncBase
 {
 	this(){ super( NAME ); }
-	override SExp filter( SymbolScope parent_ss, Parser parser )
+	override SExp filter( SExp prev, SymbolStore ss, Parser parser )
 	{
-		auto filename = parser( parent_ss ).toDstring.to!string;
-		auto yf = new YaneFile( filename );
-		auto yt = new TOKEN( yf );
-		SExpAppender acc;
-		for( ; acc.put( sworks.klisp.lisp.parse( yt, parent_ss ) ) ; ){ }
-		return acc.data;
+		auto filename = parser().toDstring.to!string;
+		return (new LISPER( filename )).core.program;
 	}
 
 	override SExp eval( EvalInfo ei )
@@ -873,23 +925,24 @@ class _includeExp(alias TOKEN, dstring NAME ) : FuncBase
 		ei.rest.clear;
 		return result;
 	}
+
+	override dstring toInitializer()
+	{
+		return "new TincludeExp!("d ~ LISPER.stringof.to!dstring ~ ", `" ~ NAME ~ "`)()";
+	}
 }
-alias _includeExp!( YaneTokenInclude, "include" ) IncludeExp;
-alias _includeExp!( YaneTokenImport, "import" ) ImportExp;
+
+alias IncludeExp = TincludeExp!( YaneLispInclude, "include" );
+alias ImportExp = TincludeExp!( YaneLispImport, "import" );
 
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
 // ユニットテスト
 void assertEval( dstring code, dstring value, string file = __FILE__, int line = __LINE__ )
 {
-	auto ss = new SymbolScope;
-	ss.entry!( sworks.klisp.yane_kl );
-	auto yf = new YaneFile( code );
-	auto yt = new YaneTokenInclude( yf );
-	auto result = yt.eval( ss ).toDstringAll;
+	auto result = (new YaneLispInclude( code )).eval().toDstringAll;
 	if( result != value ) throw new Exception( (result ~ " != " ~ value).to!string, file, line );
 }
-
 unittest
 {
         Output.ln( " ************* unittest 開始 *************" );
@@ -1187,6 +1240,7 @@ unittest
         // 生成元 : Debug/test.cpp → 生成先 : Debug/testout.cpp
         // それぞれのファイルを見ると、何か参考になるかも。
         assertEval("(eval (import 'test.cpp'))", "..done");
+
         /* // ↓等価
         using (var file = new StreamReader("test.cpp"))
         {
@@ -1194,7 +1248,6 @@ unittest
           new Lisp().eval(exp);
         }
         */
-
         Output.ln( " ********** unittest 正常終了。 **********" );
 	}
 	catch( Throwable t )
@@ -1204,30 +1257,28 @@ unittest
 	}
 }
 
-debug( yane_kl ):
-import sworks.compo.util.sequential_file;
-import sworks.compo.util.dump_members;
-void main()
+debug( yane_kl )
 {
-	try
+	import sworks.compo.util.sequential_file;
+	import sworks.compo.util.dump_members;
+	void main()
 	{
-		auto ss = new SymbolScope;
-		ss.entry!( sworks.klisp.yane_kl );
-		auto yf = new YaneFile( "lisp.txt" );
-		auto yt = new YaneTokenInclude( yf );
-		yt.eval( ss );
-//Output.ln( (new YaneFile( "test.cpp"d )).eval!include_filter(ss).toDstringAll );
-/*
-		auto yf = new YaneFile( "test.cpp", ENCODING.NULL, 2048 );
-		for( ; !yf.eof ; )
+		try
 		{
-			auto t = yf.import_filter( yf.nest );
-			Output.ln( to!string( t.type ), " : ", t.value );
+			(new YaneLispInclude( "lisp.txt" )).eval();
 		}
-		Output.ln( yf.getBenchmark.dump_members );
-//*/
+		catch( Throwable t ) Output.ln( t.toString );
 
 	}
-	catch( Throwable t ) Output.ln( t.toString );
+}
 
+debug( inline_yane_kl )
+{
+	void main()
+	{
+		int x = 100;
+		mixin( InlineYaneLisp!q{
+			(out (add x 200))
+		}d() );
+	}
 }
